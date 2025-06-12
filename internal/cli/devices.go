@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"strings"
 	"sync"
 	"syscall"
 
@@ -45,41 +46,72 @@ func Listener(
 			return err
 		}
 
-		var d devices.Device
-
-		for i := range ds {
-			if ds[i].GetSerial() == serial {
-				d = ds[i]
+		if strings.EqualFold(serial, "ALL") {
+			found := false
+			for _, d := range ds {
+				cd, ok := d.(devices.ConnectedDevice)
+				if !ok {
+					continue
+				}
+				found = true
+				if iot {
+					cd.SetMode(devices.ModeIoT)
+				}
+				devSerial := d.GetSerial()
+				for name, topic := range map[string]string{
+					"Status:   ": cd.StatusTopic(),
+					"Fault:    ": cd.FaultTopic(),
+					"Command:  ": cd.CommandTopic(),
+				} {
+					printLine(fmt.Sprintf("[%s] Subscribing to %s", devSerial, topic))
+					n := name
+					t := topic
+					if err = cd.SubscribeRaw(t, func(bytes []byte) {
+						printLine(fmt.Sprintf("[%s] %s%s", devSerial, n, string(bytes)))
+					}); err != nil {
+						return err
+					}
+				}
 			}
-		}
 
-		if d == nil {
-			return fmt.Errorf("device with serial %s not found", serial)
-		}
+			if !found {
+				return fmt.Errorf("no connected devices found")
+			}
+		} else {
+			var d devices.Device
 
-		var (
-			cd devices.ConnectedDevice
-			ok bool
-		)
+			for i := range ds {
+				if ds[i].GetSerial() == serial {
+					d = ds[i]
+				}
+			}
 
-		if cd, ok = d.(devices.ConnectedDevice); !ok {
-			return fmt.Errorf("device %s is not connected", serial)
-		}
+			if d == nil {
+				return fmt.Errorf("device with serial %s not found", serial)
+			}
 
-		if iot {
-			cd.SetMode(devices.ModeIoT)
-		}
+			cd, ok := d.(devices.ConnectedDevice)
+			if !ok {
+				return fmt.Errorf("device %s is not connected", serial)
+			}
 
-		for name, topic := range map[string]string{
-			"Status:   ": cd.StatusTopic(),
-			"Fault:    ": cd.FaultTopic(),
-			"Command:  ": cd.CommandTopic(),
-		} {
-			printLine(fmt.Sprintf("Subscribing to %s", topic))
-			if err = cd.SubscribeRaw(topic, func(bytes []byte) {
-				printLine(fmt.Sprintf("%s%s", name, string(bytes)))
-			}); err != nil {
-				return err
+			if iot {
+				cd.SetMode(devices.ModeIoT)
+			}
+
+			for name, topic := range map[string]string{
+				"Status:   ": cd.StatusTopic(),
+				"Fault:    ": cd.FaultTopic(),
+				"Command:  ": cd.CommandTopic(),
+			} {
+				printLine(fmt.Sprintf("Subscribing to %s", topic))
+				n := name
+				t := topic
+				if err = cd.SubscribeRaw(t, func(bytes []byte) {
+					printLine(fmt.Sprintf("%s%s", n, string(bytes)))
+				}); err != nil {
+					return err
+				}
 			}
 		}
 

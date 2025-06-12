@@ -38,5 +38,11 @@ anyone to control a device or read its sensors remotely from anywhere in the wor
 
 ### Listen to MQTT messages
 
-`opendyson listen SERIALNUMBER` will subscribe to the device's status, error, and command message topics through MQTT. If the `--iot` flag
-is included, opendyson will connect to the cloud-based IoT service instead of attempting to connect directly to the device.
+`opendyson listen SERIALNUMBER` will subscribe to the device's status, error, and command message topics through MQTT. If `SERIALNUMBER` is
+set to `ALL`, opendyson will attempt to subscribe to every discovered device. For example:
+
+```
+opendyson listen ALL --iot
+```
+
+If the `--iot` flag is included, opendyson will connect to the cloud-based IoT service instead of attempting to connect directly to the device.
