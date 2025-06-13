@@ -2,37 +2,34 @@ package cli
 
 import (
 	"fmt"
-	"os"
-	"os/signal"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
-	mqttsrv "github.com/mochi-co/mqtt/server"
-	"github.com/mochi-co/mqtt/server/listeners"
-	"github.com/mochi-co/mqtt/server/listeners/auth"
-
+	paho "github.com/eclipse/paho.mqtt.golang"
 	"github.com/libdyson-wg/opendyson/devices"
 )
 
-func Host(
-	getDevices func() ([]devices.Device, error),
-) func(serial string, iot bool) error {
-	return func(serial string, iot bool) error {
-		srv := mqttsrv.New()
-		tcp := listeners.NewTCP("t1", ":1883")
-		if err := srv.AddListener(tcp, &listeners.Config{Auth: new(auth.Allow)}); err != nil {
-			return fmt.Errorf("add listener: %w", err)
+func Repeater(getDevices func() ([]devices.Device, error)) func(serial string, iot bool, ip, user, pw string) error {
+	return func(serial string, iot bool, ip, user, pw string) error {
+		opts := paho.NewClientOptions()
+		opts.AddBroker(fmt.Sprintf("tcp://%s:1883", ip))
+		opts.SetClientID("opendyson-repeater")
+		if user != "" {
+			opts.SetUsername(user)
+			opts.SetPassword(pw)
 		}
-		go func() {
-			if err := srv.Serve(); err != nil {
-				fmt.Println(err)
-			}
-		}()
+		client := paho.NewClient(opts)
+		t := client.Connect()
+		if !t.WaitTimeout(time.Second * 5) {
+			return fmt.Errorf("mqtt connect timeout")
+		}
+		if t.Error() != nil {
+			return fmt.Errorf("unable to connect: %w", t.Error())
+		}
 
 		subscribed := make(map[string]struct{})
-		var mu sync.Mutex
+		mu := sync.Mutex{}
 
 		subscribe := func(cd devices.ConnectedDevice) error {
 			if iot {
@@ -42,18 +39,16 @@ func Host(
 				t := topic
 				if err := cd.SubscribeRaw(t, func(b []byte) {
 					fmt.Printf("Incoming message %s on topic %s\n", string(b), t)
-					srv.Publish(t, b, false)
+					client.Publish(t, 0, false, b)
 				}); err != nil {
 					return err
 				}
 			}
-
 			if iot {
 				go func() {
 					ticker := time.NewTicker(30 * time.Second)
 					defer ticker.Stop()
-					for {
-						<-ticker.C
+					for range ticker.C {
 						ts := time.Now().UTC().Format(time.RFC3339)
 						msgs := []string{
 							fmt.Sprintf(`{"mode-reason":"RAPP","time":"%s","msg":"REQUEST-CURRENT-FAULTS"}`, ts),
@@ -112,14 +107,6 @@ func Host(
 					fmt.Println(err)
 				}
 			}
-		}()
-
-		sig := make(chan os.Signal, 1)
-		signal.Notify(sig, syscall.SIGTERM, os.Interrupt)
-		go func() {
-			<-sig
-			srv.Close()
-			os.Exit(0)
 		}()
 
 		select {}
