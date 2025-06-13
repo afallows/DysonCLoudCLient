@@ -13,7 +13,7 @@ type functions struct {
 	Login        func() error
 	MQTTListen   func(serial string, iot bool) error
 	MQTTHost     func(serial string, iot bool) error
-	MQTTRepeater func(serial string, iot bool, ip, user, pw string) error
+	MQTTRepeater func(serial string, iot bool, host, user, password string) error
 	GetDevices   func() ([]devices.Device, error)
 }
 

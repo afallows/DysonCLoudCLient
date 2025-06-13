@@ -2,36 +2,52 @@ package cli
 
 import (
 	"fmt"
+	"os"
+	"os/signal"
 	"strings"
-	"sync"
+	"syscall"
 	"time"
 
 	paho "github.com/eclipse/paho.mqtt.golang"
+
 	"github.com/libdyson-wg/opendyson/devices"
 )
 
-func Repeater(getDevices func() ([]devices.Device, error)) func(serial string, iot bool, ip, user, pw string) error {
-	return func(serial string, iot bool, ip, user, pw string) error {
+func Repeater(
+	getDevices func() ([]devices.Device, error),
+) func(serial string, iot bool, host, user, password string) error {
+	return func(serial string, iot bool, host, user, password string) error {
 		opts := paho.NewClientOptions()
-		opts.AddBroker(fmt.Sprintf("tcp://%s:1883", ip))
+		if strings.Contains(host, "://") {
+			opts.AddBroker(host)
+		} else {
+			opts.AddBroker(fmt.Sprintf("tcp://%s:1883", host))
+		}
 		opts.SetClientID("opendyson-repeater")
 		if user != "" {
 			opts.SetUsername(user)
-			opts.SetPassword(pw)
+			opts.SetPassword(password)
 		}
 		client := paho.NewClient(opts)
 		t := client.Connect()
-		if !t.WaitTimeout(time.Second * 5) {
-			return fmt.Errorf("mqtt connect timeout")
+		if !t.WaitTimeout(5 * time.Second) {
+			return fmt.Errorf("mqtt connect %s timeout", host)
 		}
 		if t.Error() != nil {
 			return fmt.Errorf("unable to connect: %w", t.Error())
 		}
 
-		subscribed := make(map[string]struct{})
-		mu := sync.Mutex{}
+		ds, err := getDevices()
+		if err != nil {
+			return err
+		}
 
-		subscribe := func(cd devices.ConnectedDevice) error {
+		subscribed := make(map[string]struct{})
+
+		subscribe := func(id string, cd devices.ConnectedDevice) error {
+			if _, ok := subscribed[id]; ok {
+				return nil
+			}
 			if iot {
 				cd.SetMode(devices.ModeIoT)
 			}
@@ -44,11 +60,13 @@ func Repeater(getDevices func() ([]devices.Device, error)) func(serial string, i
 					return err
 				}
 			}
+
 			if iot {
 				go func() {
 					ticker := time.NewTicker(30 * time.Second)
 					defer ticker.Stop()
-					for range ticker.C {
+					for {
+						<-ticker.C
 						ts := time.Now().UTC().Format(time.RFC3339)
 						msgs := []string{
 							fmt.Sprintf(`{"mode-reason":"RAPP","time":"%s","msg":"REQUEST-CURRENT-FAULTS"}`, ts),
@@ -61,47 +79,75 @@ func Repeater(getDevices func() ([]devices.Device, error)) func(serial string, i
 					}
 				}()
 			}
+			subscribed[id] = struct{}{}
 			return nil
 		}
 
-		updateSubs := func() error {
-			ds, err := getDevices()
-			if err != nil {
-				return err
-			}
+		if strings.EqualFold(serial, "ALL") {
+			found := false
 			for _, d := range ds {
-				if serial != "ALL" && !strings.EqualFold(serial, d.GetSerial()) {
-					continue
-				}
 				cd, ok := d.(devices.ConnectedDevice)
 				if !ok {
 					continue
 				}
-				mu.Lock()
-				if _, ok := subscribed[d.GetSerial()]; !ok {
-					if err := subscribe(cd); err != nil {
-						mu.Unlock()
-						return err
-					}
-					subscribed[d.GetSerial()] = struct{}{}
+				found = true
+				if err := subscribe(d.GetSerial(), cd); err != nil {
+					return err
 				}
-				mu.Unlock()
 			}
-			return nil
-		}
-
-		if err := updateSubs(); err != nil {
-			return err
+			if !found {
+				return fmt.Errorf("no connected devices found")
+			}
+		} else {
+			var d devices.Device
+			for _, dev := range ds {
+				if dev.GetSerial() == serial {
+					d = dev
+					break
+				}
+			}
+			if d == nil {
+				return fmt.Errorf("device with serial %s not found", serial)
+			}
+			cd, ok := d.(devices.ConnectedDevice)
+			if !ok {
+				return fmt.Errorf("device %s is not connected", serial)
+			}
+			if err := subscribe(d.GetSerial(), cd); err != nil {
+				return err
+			}
 		}
 
 		go func() {
 			ticker := time.NewTicker(5 * time.Minute)
 			defer ticker.Stop()
 			for range ticker.C {
-				if err := updateSubs(); err != nil {
-					fmt.Println(err)
+				if !strings.EqualFold(serial, "ALL") {
+					continue
+				}
+				nds, err := getDevices()
+				if err != nil {
+					fmt.Println("device refresh:", err)
+					continue
+				}
+				for _, d := range nds {
+					cd, ok := d.(devices.ConnectedDevice)
+					if !ok {
+						continue
+					}
+					if err := subscribe(d.GetSerial(), cd); err != nil {
+						fmt.Println(err)
+					}
 				}
 			}
+		}()
+
+		sig := make(chan os.Signal, 1)
+		signal.Notify(sig, syscall.SIGTERM, os.Interrupt)
+		go func() {
+			<-sig
+			client.Disconnect(250)
+			os.Exit(0)
 		}()
 
 		select {}

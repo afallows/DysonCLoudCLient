@@ -5,7 +5,6 @@ import (
 	"os"
 	"os/signal"
 	"strings"
-	"sync"
 	"syscall"
 	"time"
 
@@ -31,10 +30,17 @@ func Host(
 			}
 		}()
 
-		subscribed := make(map[string]struct{})
-		var mu sync.Mutex
+		ds, err := getDevices()
+		if err != nil {
+			return err
+		}
 
-		subscribe := func(cd devices.ConnectedDevice) error {
+		subscribed := make(map[string]struct{})
+
+		subscribe := func(id string, cd devices.ConnectedDevice) error {
+			if _, ok := subscribed[id]; ok {
+				return nil
+			}
 			if iot {
 				cd.SetMode(devices.ModeIoT)
 			}
@@ -66,45 +72,65 @@ func Host(
 					}
 				}()
 			}
+			subscribed[id] = struct{}{}
 			return nil
 		}
 
-		updateSubs := func() error {
-			ds, err := getDevices()
-			if err != nil {
-				return err
-			}
+		if strings.EqualFold(serial, "ALL") {
+			found := false
 			for _, d := range ds {
-				if serial != "ALL" && !strings.EqualFold(serial, d.GetSerial()) {
-					continue
-				}
 				cd, ok := d.(devices.ConnectedDevice)
 				if !ok {
 					continue
 				}
-				mu.Lock()
-				if _, ok := subscribed[d.GetSerial()]; !ok {
-					if err := subscribe(cd); err != nil {
-						mu.Unlock()
-						return err
-					}
-					subscribed[d.GetSerial()] = struct{}{}
+				found = true
+				if err := subscribe(d.GetSerial(), cd); err != nil {
+					return err
 				}
-				mu.Unlock()
 			}
-			return nil
-		}
-
-		if err := updateSubs(); err != nil {
-			return err
+			if !found {
+				return fmt.Errorf("no connected devices found")
+			}
+		} else {
+			var d devices.Device
+			for _, dev := range ds {
+				if dev.GetSerial() == serial {
+					d = dev
+					break
+				}
+			}
+			if d == nil {
+				return fmt.Errorf("device with serial %s not found", serial)
+			}
+			cd, ok := d.(devices.ConnectedDevice)
+			if !ok {
+				return fmt.Errorf("device %s is not connected", serial)
+			}
+			if err := subscribe(d.GetSerial(), cd); err != nil {
+				return err
+			}
 		}
 
 		go func() {
 			ticker := time.NewTicker(5 * time.Minute)
 			defer ticker.Stop()
 			for range ticker.C {
-				if err := updateSubs(); err != nil {
-					fmt.Println(err)
+				if !strings.EqualFold(serial, "ALL") {
+					continue
+				}
+				nds, err := getDevices()
+				if err != nil {
+					fmt.Println("device refresh:", err)
+					continue
+				}
+				for _, d := range nds {
+					cd, ok := d.(devices.ConnectedDevice)
+					if !ok {
+						continue
+					}
+					if err := subscribe(d.GetSerial(), cd); err != nil {
+						fmt.Println(err)
+					}
 				}
 			}
 		}()
