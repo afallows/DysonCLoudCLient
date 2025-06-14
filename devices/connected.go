@@ -29,6 +29,7 @@ type ConnectedDevice interface {
 	FaultTopic() string
 
 	SetMode(mode ConnectedMode)
+	UpdateIoT(iot IoT)
 }
 
 type Firmware struct {
@@ -164,4 +165,12 @@ func (d *BaseConnectedDevice) ResolveLocalAddress() error {
 	}
 
 	return nil
+}
+
+func (d *BaseConnectedDevice) UpdateIoT(iot IoT) {
+	d.IoT = iot
+	if d.mode == ModeIoT && d.client != nil {
+		d.client.Disconnect(250)
+		d.client = nil
+	}
 }

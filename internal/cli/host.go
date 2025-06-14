@@ -8,6 +8,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/libdyson-wg/opendyson/cloud"
+
 	mqttsrv "github.com/mochi-co/mqtt/server"
 	"github.com/mochi-co/mqtt/server/listeners"
 	"github.com/mochi-co/mqtt/server/listeners/auth"
@@ -36,9 +38,9 @@ func Host(
 		}
 
 		subscribed := make(map[string]struct{})
-
-		subscribe := func(id string, cd devices.ConnectedDevice) error {
-			if _, ok := subscribed[id]; ok {
+		var subscribe func(id string, cd devices.ConnectedDevice, force bool) error
+		subscribe = func(id string, cd devices.ConnectedDevice, force bool) error {
+			if _, ok := subscribed[id]; ok && !force {
 				return nil
 			}
 			if iot {
@@ -55,22 +57,39 @@ func Host(
 			}
 
 			if iot {
-				go func() {
+				go func(id string, cd devices.ConnectedDevice) {
 					ticker := time.NewTicker(30 * time.Second)
+					refresh := time.NewTicker(23 * time.Hour)
 					defer ticker.Stop()
+					defer refresh.Stop()
 					for {
-						<-ticker.C
-						ts := time.Now().UTC().Format(time.RFC3339)
-						msgs := []string{
-							fmt.Sprintf(`{"mode-reason":"RAPP","time":"%s","msg":"REQUEST-CURRENT-FAULTS"}`, ts),
-							fmt.Sprintf(`{"mode-reason":"RAPP","time":"%s","msg":"REQUEST-CURRENT-STATE"}`, ts),
-						}
-						for _, m := range msgs {
-							fmt.Printf("Sending %s to %s\n", m, cd.CommandTopic())
-							_ = cd.SendRaw(cd.CommandTopic(), []byte(m))
+						select {
+						case <-ticker.C:
+							ts := time.Now().UTC().Format(time.RFC3339)
+							msgs := []string{
+								fmt.Sprintf(`{"mode-reason":"RAPP","time":"%s","msg":"REQUEST-CURRENT-FAULTS"}`, ts),
+								fmt.Sprintf(`{"mode-reason":"RAPP","time":"%s","msg":"REQUEST-CURRENT-STATE"}`, ts),
+							}
+							for _, m := range msgs {
+								fmt.Printf("Sending %s to %s\n", m, cd.CommandTopic())
+								_ = cd.SendRaw(cd.CommandTopic(), []byte(m))
+							}
+						case <-refresh.C:
+							info, err := cloud.GetDeviceIoT(id)
+							if err != nil {
+								fmt.Println("iot refresh:", err)
+								continue
+							}
+							if u, ok := cd.(interface{ UpdateIoT(devices.IoT) }); ok {
+								u.UpdateIoT(info)
+							}
+							cd.SetMode(devices.ModeIoT)
+							if err := subscribe(id, cd, true); err != nil {
+								fmt.Println(err)
+							}
 						}
 					}
-				}()
+				}(id, cd)
 			}
 			subscribed[id] = struct{}{}
 			return nil
@@ -84,7 +103,7 @@ func Host(
 					continue
 				}
 				found = true
-				if err := subscribe(d.GetSerial(), cd); err != nil {
+				if err := subscribe(d.GetSerial(), cd, false); err != nil {
 					return err
 				}
 			}
@@ -106,7 +125,7 @@ func Host(
 			if !ok {
 				return fmt.Errorf("device %s is not connected", serial)
 			}
-			if err := subscribe(d.GetSerial(), cd); err != nil {
+			if err := subscribe(d.GetSerial(), cd, false); err != nil {
 				return err
 			}
 		}
@@ -128,7 +147,7 @@ func Host(
 					if !ok {
 						continue
 					}
-					if err := subscribe(d.GetSerial(), cd); err != nil {
+					if err := subscribe(d.GetSerial(), cd, false); err != nil {
 						fmt.Println(err)
 					}
 				}
