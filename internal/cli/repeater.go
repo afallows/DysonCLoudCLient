@@ -5,8 +5,11 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
+
+	"github.com/libdyson-wg/opendyson/cloud"
 
 	paho "github.com/eclipse/paho.mqtt.golang"
 
@@ -43,9 +46,13 @@ func Repeater(
 		}
 
 		subscribed := make(map[string]struct{})
+		commandTargets := make(map[string]devices.ConnectedDevice)
+		mu := sync.RWMutex{}
+		dedup := make(map[string]map[string]struct{})
 
-		subscribe := func(id string, cd devices.ConnectedDevice) error {
-			if _, ok := subscribed[id]; ok {
+		var subscribe func(id string, cd devices.ConnectedDevice, force bool) error
+		subscribe = func(id string, cd devices.ConnectedDevice, force bool) error {
+			if _, ok := subscribed[id]; ok && !force {
 				return nil
 			}
 			if iot {
@@ -54,6 +61,20 @@ func Repeater(
 			for _, topic := range []string{cd.StatusTopic(), cd.FaultTopic(), cd.CommandTopic()} {
 				t := topic
 				if err := cd.SubscribeRaw(t, func(b []byte) {
+					if t == cd.CommandTopic() {
+						mu.Lock()
+						if m, ok := dedup[t]; ok {
+							if _, seen := m[string(b)]; seen {
+								delete(m, string(b))
+								if len(m) == 0 {
+									delete(dedup, t)
+								}
+								mu.Unlock()
+								return
+							}
+						}
+						mu.Unlock()
+					}
 					fmt.Printf("Incoming message %s on topic %s\n", string(b), t)
 					client.Publish(t, 0, false, b)
 				}); err != nil {
@@ -61,23 +82,73 @@ func Repeater(
 				}
 			}
 
-			if iot {
-				go func() {
-					ticker := time.NewTicker(30 * time.Second)
-					defer ticker.Stop()
-					for {
-						<-ticker.C
-						ts := time.Now().UTC().Format(time.RFC3339)
-						msgs := []string{
-							fmt.Sprintf(`{"mode-reason":"RAPP","time":"%s","msg":"REQUEST-CURRENT-FAULTS"}`, ts),
-							fmt.Sprintf(`{"mode-reason":"RAPP","time":"%s","msg":"REQUEST-CURRENT-STATE"}`, ts),
-						}
-						for _, m := range msgs {
-							fmt.Printf("Sending %s to %s\n", m, cd.CommandTopic())
-							_ = cd.SendRaw(cd.CommandTopic(), []byte(m))
+			mu.Lock()
+			commandTargets[cd.CommandTopic()] = cd
+			mu.Unlock()
+
+			if token := client.Subscribe(cd.CommandTopic(), 0, func(c paho.Client, msg paho.Message) {
+				payload := msg.Payload()
+				fmt.Printf("Forwarding %s from host to %s\n", string(payload), cd.CommandTopic())
+				if err := cd.SendRaw(cd.CommandTopic(), payload); err != nil {
+					fmt.Println(err)
+					return
+				}
+				mu.Lock()
+				if dedup[cd.CommandTopic()] == nil {
+					dedup[cd.CommandTopic()] = make(map[string]struct{})
+				}
+				dedup[cd.CommandTopic()][string(payload)] = struct{}{}
+				mu.Unlock()
+				time.AfterFunc(10*time.Second, func() {
+					mu.Lock()
+					if m, ok := dedup[cd.CommandTopic()]; ok {
+						delete(m, string(payload))
+						if len(m) == 0 {
+							delete(dedup, cd.CommandTopic())
 						}
 					}
-				}()
+					mu.Unlock()
+				})
+			}); !token.WaitTimeout(5 * time.Second) {
+				return fmt.Errorf("subscribe timeout")
+			} else if token.Error() != nil {
+				return token.Error()
+			}
+
+			if iot {
+				go func(id string, cd devices.ConnectedDevice) {
+					ticker := time.NewTicker(30 * time.Second)
+					refresh := time.NewTicker(23 * time.Hour)
+					defer ticker.Stop()
+					defer refresh.Stop()
+					for {
+						select {
+						case <-ticker.C:
+							ts := time.Now().UTC().Format(time.RFC3339)
+							msgs := []string{
+								fmt.Sprintf(`{"mode-reason":"RAPP","time":"%s","msg":"REQUEST-CURRENT-FAULTS"}`, ts),
+								fmt.Sprintf(`{"mode-reason":"RAPP","time":"%s","msg":"REQUEST-CURRENT-STATE"}`, ts),
+							}
+							for _, m := range msgs {
+								fmt.Printf("Sending %s to %s\n", m, cd.CommandTopic())
+								_ = cd.SendRaw(cd.CommandTopic(), []byte(m))
+							}
+						case <-refresh.C:
+							info, err := cloud.GetDeviceIoT(id)
+							if err != nil {
+								fmt.Println("iot refresh:", err)
+								continue
+							}
+							if u, ok := cd.(interface{ UpdateIoT(devices.IoT) }); ok {
+								u.UpdateIoT(info)
+							}
+							cd.SetMode(devices.ModeIoT)
+							if err := subscribe(id, cd, true); err != nil {
+								fmt.Println(err)
+							}
+						}
+					}
+				}(id, cd)
 			}
 			subscribed[id] = struct{}{}
 			return nil
@@ -91,7 +162,7 @@ func Repeater(
 					continue
 				}
 				found = true
-				if err := subscribe(d.GetSerial(), cd); err != nil {
+				if err := subscribe(d.GetSerial(), cd, false); err != nil {
 					return err
 				}
 			}
@@ -113,7 +184,7 @@ func Repeater(
 			if !ok {
 				return fmt.Errorf("device %s is not connected", serial)
 			}
-			if err := subscribe(d.GetSerial(), cd); err != nil {
+			if err := subscribe(d.GetSerial(), cd, false); err != nil {
 				return err
 			}
 		}
@@ -135,7 +206,7 @@ func Repeater(
 					if !ok {
 						continue
 					}
-					if err := subscribe(d.GetSerial(), cd); err != nil {
+					if err := subscribe(d.GetSerial(), cd, false); err != nil {
 						fmt.Println(err)
 					}
 				}
