@@ -89,16 +89,18 @@ func Repeater(
 			if token := client.Subscribe(cd.CommandTopic(), 0, func(c paho.Client, msg paho.Message) {
 				payload := msg.Payload()
 				fmt.Printf("Forwarding %s from host to %s\n", string(payload), cd.CommandTopic())
-				if err := cd.SendRaw(cd.CommandTopic(), payload); err != nil {
-					fmt.Println(err)
-					return
-				}
 				mu.Lock()
 				if dedup[cd.CommandTopic()] == nil {
 					dedup[cd.CommandTopic()] = make(map[string]struct{})
 				}
 				dedup[cd.CommandTopic()][string(payload)] = struct{}{}
 				mu.Unlock()
+				payloadCopy := make([]byte, len(payload))
+				copy(payloadCopy, payload)
+				if err := cd.SendRaw(cd.CommandTopic(), payloadCopy); err != nil {
+					fmt.Println(err)
+					return
+				}
 				time.AfterFunc(10*time.Second, func() {
 					mu.Lock()
 					if m, ok := dedup[cd.CommandTopic()]; ok {
@@ -129,9 +131,26 @@ func Repeater(
 								fmt.Sprintf(`{"mode-reason":"RAPP","time":"%s","msg":"REQUEST-CURRENT-FAULTS"}`, ts),
 								fmt.Sprintf(`{"mode-reason":"RAPP","time":"%s","msg":"REQUEST-CURRENT-STATE"}`, ts),
 							}
-							for _, m := range msgs {
-								fmt.Printf("Sending %s to %s\n", m, cd.CommandTopic())
-								_ = cd.SendRaw(cd.CommandTopic(), []byte(m))
+							for _, msg := range msgs {
+								fmt.Printf("Sending %s to %s\n", msg, cd.CommandTopic())
+								mu.Lock()
+								if dedup[cd.CommandTopic()] == nil {
+									dedup[cd.CommandTopic()] = make(map[string]struct{})
+								}
+								dedup[cd.CommandTopic()][msg] = struct{}{}
+								mu.Unlock()
+								msgCopy := msg
+								time.AfterFunc(10*time.Second, func() {
+									mu.Lock()
+									if mm, ok := dedup[cd.CommandTopic()]; ok {
+										delete(mm, msgCopy)
+										if len(mm) == 0 {
+											delete(dedup, cd.CommandTopic())
+										}
+									}
+									mu.Unlock()
+								})
+								_ = cd.SendRaw(cd.CommandTopic(), []byte(msg))
 							}
 						case <-refresh.C:
 							info, err := cloud.GetDeviceIoT(id)

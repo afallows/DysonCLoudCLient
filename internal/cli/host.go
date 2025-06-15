@@ -50,28 +50,30 @@ func Host(
 			mu.RUnlock()
 			if ok {
 				payload := pk.Payload
+				mu.Lock()
+				if dedup[cd.CommandTopic()] == nil {
+					dedup[cd.CommandTopic()] = make(map[string]struct{})
+				}
+				dedup[cd.CommandTopic()][string(payload)] = struct{}{}
+				mu.Unlock()
+				payloadCopy := make([]byte, len(payload))
+				copy(payloadCopy, payload)
 				go func(d devices.ConnectedDevice, p []byte) {
 					if err := d.SendRaw(d.CommandTopic(), p); err != nil {
 						fmt.Println("relay:", err)
 						return
 					}
+				}(cd, payloadCopy)
+				time.AfterFunc(10*time.Second, func() {
 					mu.Lock()
-					if dedup[d.CommandTopic()] == nil {
-						dedup[d.CommandTopic()] = make(map[string]struct{})
-					}
-					dedup[d.CommandTopic()][string(p)] = struct{}{}
-					mu.Unlock()
-					time.AfterFunc(10*time.Second, func() {
-						mu.Lock()
-						if m, ok := dedup[d.CommandTopic()]; ok {
-							delete(m, string(p))
-							if len(m) == 0 {
-								delete(dedup, d.CommandTopic())
-							}
+					if m, ok := dedup[cd.CommandTopic()]; ok {
+						delete(m, string(payload))
+						if len(m) == 0 {
+							delete(dedup, cd.CommandTopic())
 						}
-						mu.Unlock()
-					})
-				}(cd, payload)
+					}
+					mu.Unlock()
+				})
 			}
 			return pk, nil
 		}
@@ -126,9 +128,26 @@ func Host(
 								fmt.Sprintf(`{"mode-reason":"RAPP","time":"%s","msg":"REQUEST-CURRENT-FAULTS"}`, ts),
 								fmt.Sprintf(`{"mode-reason":"RAPP","time":"%s","msg":"REQUEST-CURRENT-STATE"}`, ts),
 							}
-							for _, m := range msgs {
-								fmt.Printf("Sending %s to %s\n", m, cd.CommandTopic())
-								_ = cd.SendRaw(cd.CommandTopic(), []byte(m))
+							for _, msg := range msgs {
+								fmt.Printf("Sending %s to %s\n", msg, cd.CommandTopic())
+								mu.Lock()
+								if dedup[cd.CommandTopic()] == nil {
+									dedup[cd.CommandTopic()] = make(map[string]struct{})
+								}
+								dedup[cd.CommandTopic()][msg] = struct{}{}
+								mu.Unlock()
+								msgCopy := msg
+								time.AfterFunc(10*time.Second, func() {
+									mu.Lock()
+									if mm, ok := dedup[cd.CommandTopic()]; ok {
+										delete(mm, msgCopy)
+										if len(mm) == 0 {
+											delete(dedup, cd.CommandTopic())
+										}
+									}
+									mu.Unlock()
+								})
+								_ = cd.SendRaw(cd.CommandTopic(), []byte(msg))
 							}
 						case <-refresh.C:
 							info, err := cloud.GetDeviceIoT(id)
