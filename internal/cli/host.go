@@ -42,17 +42,36 @@ func Host(
 		subscribed := make(map[string]struct{})
 		commandTargets := make(map[string]devices.ConnectedDevice)
 		mu := sync.RWMutex{}
+		dedup := make(map[string]map[string]struct{})
 
 		srv.Events.OnMessage = func(cl events.Client, pk events.Packet) (events.Packet, error) {
 			mu.RLock()
 			cd, ok := commandTargets[pk.TopicName]
 			mu.RUnlock()
 			if ok {
-				go func(d devices.ConnectedDevice, payload []byte) {
-					if err := d.SendRaw(d.CommandTopic(), payload); err != nil {
+				payload := pk.Payload
+				go func(d devices.ConnectedDevice, p []byte) {
+					if err := d.SendRaw(d.CommandTopic(), p); err != nil {
 						fmt.Println("relay:", err)
+						return
 					}
-				}(cd, pk.Payload)
+					mu.Lock()
+					if dedup[d.CommandTopic()] == nil {
+						dedup[d.CommandTopic()] = make(map[string]struct{})
+					}
+					dedup[d.CommandTopic()][string(p)] = struct{}{}
+					mu.Unlock()
+					time.AfterFunc(10*time.Second, func() {
+						mu.Lock()
+						if m, ok := dedup[d.CommandTopic()]; ok {
+							delete(m, string(p))
+							if len(m) == 0 {
+								delete(dedup, d.CommandTopic())
+							}
+						}
+						mu.Unlock()
+					})
+				}(cd, payload)
 			}
 			return pk, nil
 		}
@@ -68,6 +87,20 @@ func Host(
 			for _, topic := range []string{cd.StatusTopic(), cd.FaultTopic(), cd.CommandTopic()} {
 				t := topic
 				if err := cd.SubscribeRaw(t, func(b []byte) {
+					if t == cd.CommandTopic() {
+						mu.Lock()
+						if m, ok := dedup[t]; ok {
+							if _, seen := m[string(b)]; seen {
+								delete(m, string(b))
+								if len(m) == 0 {
+									delete(dedup, t)
+								}
+								mu.Unlock()
+								return
+							}
+						}
+						mu.Unlock()
+					}
 					fmt.Printf("Incoming message %s on topic %s\n", string(b), t)
 					srv.Publish(t, b, false)
 				}); err != nil {

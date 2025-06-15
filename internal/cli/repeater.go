@@ -48,6 +48,7 @@ func Repeater(
 		subscribed := make(map[string]struct{})
 		commandTargets := make(map[string]devices.ConnectedDevice)
 		mu := sync.RWMutex{}
+		dedup := make(map[string]map[string]struct{})
 
 		var subscribe func(id string, cd devices.ConnectedDevice, force bool) error
 		subscribe = func(id string, cd devices.ConnectedDevice, force bool) error {
@@ -60,6 +61,20 @@ func Repeater(
 			for _, topic := range []string{cd.StatusTopic(), cd.FaultTopic(), cd.CommandTopic()} {
 				t := topic
 				if err := cd.SubscribeRaw(t, func(b []byte) {
+					if t == cd.CommandTopic() {
+						mu.Lock()
+						if m, ok := dedup[t]; ok {
+							if _, seen := m[string(b)]; seen {
+								delete(m, string(b))
+								if len(m) == 0 {
+									delete(dedup, t)
+								}
+								mu.Unlock()
+								return
+							}
+						}
+						mu.Unlock()
+					}
 					fmt.Printf("Incoming message %s on topic %s\n", string(b), t)
 					client.Publish(t, 0, false, b)
 				}); err != nil {
@@ -72,10 +87,28 @@ func Repeater(
 			mu.Unlock()
 
 			if token := client.Subscribe(cd.CommandTopic(), 0, func(c paho.Client, msg paho.Message) {
-				fmt.Printf("Forwarding %s from host to %s\n", string(msg.Payload()), cd.CommandTopic())
-				if err := cd.SendRaw(cd.CommandTopic(), msg.Payload()); err != nil {
+				payload := msg.Payload()
+				fmt.Printf("Forwarding %s from host to %s\n", string(payload), cd.CommandTopic())
+				if err := cd.SendRaw(cd.CommandTopic(), payload); err != nil {
 					fmt.Println(err)
+					return
 				}
+				mu.Lock()
+				if dedup[cd.CommandTopic()] == nil {
+					dedup[cd.CommandTopic()] = make(map[string]struct{})
+				}
+				dedup[cd.CommandTopic()][string(payload)] = struct{}{}
+				mu.Unlock()
+				time.AfterFunc(10*time.Second, func() {
+					mu.Lock()
+					if m, ok := dedup[cd.CommandTopic()]; ok {
+						delete(m, string(payload))
+						if len(m) == 0 {
+							delete(dedup, cd.CommandTopic())
+						}
+					}
+					mu.Unlock()
+				})
 			}); !token.WaitTimeout(5 * time.Second) {
 				return fmt.Errorf("subscribe timeout")
 			} else if token.Error() != nil {
