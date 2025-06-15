@@ -5,12 +5,14 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
 	"github.com/libdyson-wg/opendyson/cloud"
 
 	mqttsrv "github.com/mochi-co/mqtt/server"
+	"github.com/mochi-co/mqtt/server/events"
 	"github.com/mochi-co/mqtt/server/listeners"
 	"github.com/mochi-co/mqtt/server/listeners/auth"
 
@@ -38,6 +40,23 @@ func Host(
 		}
 
 		subscribed := make(map[string]struct{})
+		commandTargets := make(map[string]devices.ConnectedDevice)
+		mu := sync.RWMutex{}
+
+		srv.Events.OnMessage = func(cl events.Client, pk events.Packet) (events.Packet, error) {
+			mu.RLock()
+			cd, ok := commandTargets[pk.TopicName]
+			mu.RUnlock()
+			if ok {
+				go func(d devices.ConnectedDevice, payload []byte) {
+					if err := d.SendRaw(d.CommandTopic(), payload); err != nil {
+						fmt.Println("relay:", err)
+					}
+				}(cd, pk.Payload)
+			}
+			return pk, nil
+		}
+
 		var subscribe func(id string, cd devices.ConnectedDevice, force bool) error
 		subscribe = func(id string, cd devices.ConnectedDevice, force bool) error {
 			if _, ok := subscribed[id]; ok && !force {
@@ -55,6 +74,10 @@ func Host(
 					return err
 				}
 			}
+
+			mu.Lock()
+			commandTargets[cd.CommandTopic()] = cd
+			mu.Unlock()
 
 			if iot {
 				go func(id string, cd devices.ConnectedDevice) {

@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -45,6 +46,9 @@ func Repeater(
 		}
 
 		subscribed := make(map[string]struct{})
+		commandTargets := make(map[string]devices.ConnectedDevice)
+		mu := sync.RWMutex{}
+
 		var subscribe func(id string, cd devices.ConnectedDevice, force bool) error
 		subscribe = func(id string, cd devices.ConnectedDevice, force bool) error {
 			if _, ok := subscribed[id]; ok && !force {
@@ -61,6 +65,21 @@ func Repeater(
 				}); err != nil {
 					return err
 				}
+			}
+
+			mu.Lock()
+			commandTargets[cd.CommandTopic()] = cd
+			mu.Unlock()
+
+			if token := client.Subscribe(cd.CommandTopic(), 0, func(c paho.Client, msg paho.Message) {
+				fmt.Printf("Forwarding %s from host to %s\n", string(msg.Payload()), cd.CommandTopic())
+				if err := cd.SendRaw(cd.CommandTopic(), msg.Payload()); err != nil {
+					fmt.Println(err)
+				}
+			}); !token.WaitTimeout(5 * time.Second) {
+				return fmt.Errorf("subscribe timeout")
+			} else if token.Error() != nil {
+				return token.Error()
 			}
 
 			if iot {
