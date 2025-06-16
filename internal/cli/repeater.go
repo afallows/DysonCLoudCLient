@@ -126,12 +126,9 @@ func Repeater(
 					for {
 						select {
 						case <-ticker.C:
-							ts := time.Now().UTC().Format(time.RFC3339)
-							msgs := []string{
-								fmt.Sprintf(`{"mode-reason":"RAPP","time":"%s","msg":"REQUEST-CURRENT-FAULTS"}`, ts),
-								fmt.Sprintf(`{"mode-reason":"RAPP","time":"%s","msg":"REQUEST-CURRENT-STATE"}`, ts),
-							}
-							for _, msg := range msgs {
+							for _, m := range []string{"REQUEST-CURRENT-FAULTS", "REQUEST-CURRENT-STATE"} {
+								ts := time.Now().UTC().Format(time.RFC3339)
+								msg := fmt.Sprintf(`{"mode-reason":"RAPP","time":"%s","msg":"%s"}`, ts, m)
 								fmt.Printf("Sending %s to %s\n", msg, cd.CommandTopic())
 								mu.Lock()
 								if dedup[cd.CommandTopic()] == nil {
