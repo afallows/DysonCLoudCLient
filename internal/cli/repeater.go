@@ -58,30 +58,33 @@ func Repeater(
 			if iot {
 				cd.SetMode(devices.ModeIoT)
 			}
-			for _, topic := range []string{cd.StatusTopic(), cd.FaultTopic(), cd.CommandTopic()} {
+			for _, topic := range []string{cd.StatusTopic(), cd.FaultTopic()} {
 				t := topic
 				if err := cd.SubscribeRaw(t, func(b []byte) {
-					if t == cd.CommandTopic() {
-						mu.Lock()
-						if m, ok := dedup[t]; ok {
-							if _, seen := m[string(b)]; seen {
-								delete(m, string(b))
-								if len(m) == 0 {
-									delete(dedup, t)
-								}
-								mu.Unlock()
-								return
-							}
-						}
-						mu.Unlock()
-						fmt.Printf("Incoming message %s on topic %s\n", string(b), t)
-						return // do not publish command messages back to MQTT server
-					}
 					fmt.Printf("Incoming message %s on topic %s\n", string(b), t)
 					client.Publish(t, 0, false, b)
 				}); err != nil {
 					return err
 				}
+			}
+
+			if err := cd.SubscribeRaw(cd.CommandTopic(), func(b []byte) {
+				mu.Lock()
+				if m, ok := dedup[cd.CommandTopic()]; ok {
+					if _, seen := m[string(b)]; seen {
+						delete(m, string(b))
+						if len(m) == 0 {
+							delete(dedup, cd.CommandTopic())
+						}
+						mu.Unlock()
+						return
+					}
+				}
+				mu.Unlock()
+				fmt.Printf("Incoming message %s on topic %s\n", string(b), cd.CommandTopic())
+				// Do not publish command messages back to MQTT server
+			}); err != nil {
+				return err
 			}
 
 			mu.Lock()
