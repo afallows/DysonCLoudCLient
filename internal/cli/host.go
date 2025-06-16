@@ -21,8 +21,8 @@ import (
 
 func Host(
 	getDevices func() ([]devices.Device, error),
-) func(serial string, iot bool) error {
-	return func(serial string, iot bool) error {
+) func(serial string, iot bool, refresh int) error {
+	return func(serial string, iot bool, refresh int) error {
 		srv := mqttsrv.New()
 		tcp := listeners.NewTCP("t1", ":1883")
 		if err := srv.AddListener(tcp, &listeners.Config{Auth: new(auth.Allow)}); err != nil {
@@ -118,37 +118,56 @@ func Host(
 
 			if iot {
 				go func(id string, cd devices.ConnectedDevice) {
-					ticker := time.NewTicker(30 * time.Second)
-					refresh := time.NewTicker(23 * time.Hour)
-					defer ticker.Stop()
-					defer refresh.Stop()
+					var ticker *time.Ticker
+					if refresh > 0 {
+						ticker = time.NewTicker(time.Duration(refresh) * time.Second)
+						defer ticker.Stop()
+					}
+					credRefresh := time.NewTicker(23 * time.Hour)
+					defer credRefresh.Stop()
 					for {
-						select {
-						case <-ticker.C:
-							for _, m := range []string{"REQUEST-CURRENT-FAULTS", "REQUEST-CURRENT-STATE"} {
-								ts := time.Now().UTC().Format(time.RFC3339)
-								msg := fmt.Sprintf(`{"mode-reason":"RAPP","time":"%s","msg":"%s"}`, ts, m)
-								fmt.Printf("Sending %s to %s\n", msg, cd.CommandTopic())
-								mu.Lock()
-								if dedup[cd.CommandTopic()] == nil {
-									dedup[cd.CommandTopic()] = make(map[string]struct{})
-								}
-								dedup[cd.CommandTopic()][msg] = struct{}{}
-								mu.Unlock()
-								msgCopy := msg
-								time.AfterFunc(10*time.Second, func() {
+						if ticker != nil {
+							select {
+							case <-ticker.C:
+								for _, m := range []string{"REQUEST-CURRENT-FAULTS", "REQUEST-CURRENT-STATE"} {
+									ts := time.Now().UTC().Format(time.RFC3339)
+									msg := fmt.Sprintf(`{"mode-reason":"RAPP","time":"%s","msg":"%s"}`, ts, m)
+									fmt.Printf("Sending %s to %s\n", msg, cd.CommandTopic())
 									mu.Lock()
-									if mm, ok := dedup[cd.CommandTopic()]; ok {
-										delete(mm, msgCopy)
-										if len(mm) == 0 {
-											delete(dedup, cd.CommandTopic())
-										}
+									if dedup[cd.CommandTopic()] == nil {
+										dedup[cd.CommandTopic()] = make(map[string]struct{})
 									}
+									dedup[cd.CommandTopic()][msg] = struct{}{}
 									mu.Unlock()
-								})
-								_ = cd.SendRaw(cd.CommandTopic(), []byte(msg))
+									msgCopy := msg
+									time.AfterFunc(10*time.Second, func() {
+										mu.Lock()
+										if mm, ok := dedup[cd.CommandTopic()]; ok {
+											delete(mm, msgCopy)
+											if len(mm) == 0 {
+												delete(dedup, cd.CommandTopic())
+											}
+										}
+										mu.Unlock()
+									})
+									_ = cd.SendRaw(cd.CommandTopic(), []byte(msg))
+								}
+							case <-credRefresh.C:
+								info, err := cloud.GetDeviceIoT(id)
+								if err != nil {
+									fmt.Println("iot refresh:", err)
+									continue
+								}
+								if u, ok := cd.(interface{ UpdateIoT(devices.IoT) }); ok {
+									u.UpdateIoT(info)
+								}
+								cd.SetMode(devices.ModeIoT)
+								if err := subscribe(id, cd, true); err != nil {
+									fmt.Println(err)
+								}
 							}
-						case <-refresh.C:
+						} else {
+							<-credRefresh.C
 							info, err := cloud.GetDeviceIoT(id)
 							if err != nil {
 								fmt.Println("iot refresh:", err)
