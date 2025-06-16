@@ -74,6 +74,8 @@ func Repeater(
 							}
 						}
 						mu.Unlock()
+						fmt.Printf("Incoming message %s on topic %s\n", string(b), t)
+						return // do not publish command messages back to MQTT server
 					}
 					fmt.Printf("Incoming message %s on topic %s\n", string(b), t)
 					client.Publish(t, 0, false, b)

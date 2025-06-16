@@ -102,6 +102,8 @@ func Host(
 							}
 						}
 						mu.Unlock()
+						fmt.Printf("Incoming message %s on topic %s\n", string(b), t)
+						return // do not publish command messages to MQTT server
 					}
 					fmt.Printf("Incoming message %s on topic %s\n", string(b), t)
 					srv.Publish(t, b, false)
