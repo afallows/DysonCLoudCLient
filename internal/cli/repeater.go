@@ -69,10 +69,11 @@ func Repeater(
 			}
 
 			if err := cd.SubscribeRaw(cd.CommandTopic(), func(b []byte) {
+				key := dedupKey(b)
 				mu.Lock()
 				if m, ok := dedup[cd.CommandTopic()]; ok {
-					if _, seen := m[string(b)]; seen {
-						delete(m, string(b))
+					if _, seen := m[key]; seen {
+						delete(m, key)
 						if len(m) == 0 {
 							delete(dedup, cd.CommandTopic())
 						}
@@ -94,11 +95,12 @@ func Repeater(
 			if token := client.Subscribe(cd.CommandTopic(), 0, func(c paho.Client, msg paho.Message) {
 				payload := msg.Payload()
 				fmt.Printf("Forwarding %s from host to %s\n", string(payload), cd.CommandTopic())
+				key := dedupKey(payload)
 				mu.Lock()
 				if dedup[cd.CommandTopic()] == nil {
 					dedup[cd.CommandTopic()] = make(map[string]struct{})
 				}
-				dedup[cd.CommandTopic()][string(payload)] = struct{}{}
+				dedup[cd.CommandTopic()][key] = struct{}{}
 				mu.Unlock()
 				payloadCopy := make([]byte, len(payload))
 				copy(payloadCopy, payload)
@@ -109,7 +111,7 @@ func Repeater(
 				time.AfterFunc(10*time.Second, func() {
 					mu.Lock()
 					if m, ok := dedup[cd.CommandTopic()]; ok {
-						delete(m, string(payload))
+						delete(m, key)
 						if len(m) == 0 {
 							delete(dedup, cd.CommandTopic())
 						}
@@ -139,17 +141,17 @@ func Repeater(
 									ts := time.Now().UTC().Format(time.RFC3339)
 									msg := fmt.Sprintf(`{"mode-reason":"RAPP","time":"%s","msg":"%s"}`, ts, m)
 									fmt.Printf("Sending %s to %s\n", msg, cd.CommandTopic())
+									key := dedupKey([]byte(msg))
 									mu.Lock()
 									if dedup[cd.CommandTopic()] == nil {
 										dedup[cd.CommandTopic()] = make(map[string]struct{})
 									}
-									dedup[cd.CommandTopic()][msg] = struct{}{}
+									dedup[cd.CommandTopic()][key] = struct{}{}
 									mu.Unlock()
-									msgCopy := msg
 									time.AfterFunc(10*time.Second, func() {
 										mu.Lock()
 										if mm, ok := dedup[cd.CommandTopic()]; ok {
-											delete(mm, msgCopy)
+											delete(mm, key)
 											if len(mm) == 0 {
 												delete(dedup, cd.CommandTopic())
 											}
