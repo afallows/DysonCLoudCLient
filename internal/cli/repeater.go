@@ -15,6 +15,7 @@ import (
 	paho "github.com/eclipse/paho.mqtt.golang"
 
 	"github.com/libdyson-wg/opendyson/devices"
+	"github.com/libdyson-wg/opendyson/internal/shell"
 )
 
 func Repeater(
@@ -283,6 +284,7 @@ func Repeater(
 
 		sig := make(chan os.Signal, 1)
 		signal.Notify(sig, syscall.SIGTERM, os.Interrupt)
+		shell.ListenForCtrlX(sig)
 		go func() {
 			<-sig
 			if Verbose {

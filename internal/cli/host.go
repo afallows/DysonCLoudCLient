@@ -18,6 +18,7 @@ import (
 	"github.com/mochi-co/mqtt/server/listeners/auth"
 
 	"github.com/libdyson-wg/opendyson/devices"
+	"github.com/libdyson-wg/opendyson/internal/shell"
 )
 
 func Host(
@@ -273,6 +274,7 @@ func Host(
 
 		sig := make(chan os.Signal, 1)
 		signal.Notify(sig, syscall.SIGTERM, os.Interrupt)
+		shell.ListenForCtrlX(sig)
 		go func() {
 			<-sig
 			if Verbose {

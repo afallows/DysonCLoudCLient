@@ -14,6 +14,7 @@ import (
 	"github.com/libdyson-wg/opendyson/cloud"
 	"github.com/libdyson-wg/opendyson/devices"
 	"github.com/libdyson-wg/opendyson/internal/config"
+	"github.com/libdyson-wg/opendyson/internal/shell"
 )
 
 func DeviceGetter(getDevices func() ([]devices.Device, error)) func() ([]devices.Device, error) {
@@ -153,6 +154,7 @@ func Listener(
 
 		sig := make(chan os.Signal, 1)
 		signal.Notify(sig, syscall.SIGTERM, os.Interrupt)
+		shell.ListenForCtrlX(sig)
 		go func() {
 			<-sig
 			if Verbose {
