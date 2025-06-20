@@ -3,6 +3,7 @@ package cmd
 import (
 	"os"
 
+	"github.com/libdyson-wg/opendyson/cloud"
 	"github.com/libdyson-wg/opendyson/devices"
 	"github.com/libdyson-wg/opendyson/internal/cli"
 	"github.com/spf13/cobra"
@@ -33,5 +34,6 @@ func init() {
 	rootCmd.PersistentPreRun = func(cmd *cobra.Command, args []string) {
 		cli.Verbose = verbose
 		devices.Verbose = verbose
+		cloud.Verbose = verbose
 	}
 }
