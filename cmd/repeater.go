@@ -21,7 +21,8 @@ var repeaterCmd = &cobra.Command{
 		}
 		user, _ := cmd.Flags().GetString("user")
 		password, _ := cmd.Flags().GetString("password")
-		return funcs.MQTTRepeater(args[0], iot, host, user, password)
+		refresh, _ := cmd.Flags().GetInt("refresh")
+		return funcs.MQTTRepeater(args[0], iot, host, user, password, refresh)
 	},
 }
 
@@ -31,4 +32,5 @@ func init() {
 	repeaterCmd.Flags().StringP("host", "", "", "remote MQTT host (hostname or address)")
 	repeaterCmd.Flags().StringP("user", "u", "", "username for remote MQTT host")
 	repeaterCmd.Flags().StringP("password", "p", "", "password for remote MQTT host")
+	repeaterCmd.Flags().IntP("refresh", "", 0, "interval in seconds between periodic command publishes (0 to disable)")
 }

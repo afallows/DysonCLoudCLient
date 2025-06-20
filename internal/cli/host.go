@@ -5,10 +5,14 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
+	"github.com/libdyson-wg/opendyson/cloud"
+
 	mqttsrv "github.com/mochi-co/mqtt/server"
+	"github.com/mochi-co/mqtt/server/events"
 	"github.com/mochi-co/mqtt/server/listeners"
 	"github.com/mochi-co/mqtt/server/listeners/auth"
 
@@ -17,8 +21,8 @@ import (
 
 func Host(
 	getDevices func() ([]devices.Device, error),
-) func(serial string, iot bool) error {
-	return func(serial string, iot bool) error {
+) func(serial string, iot bool, refresh int) error {
+	return func(serial string, iot bool, refresh int) error {
 		srv := mqttsrv.New()
 		tcp := listeners.NewTCP("t1", ":1883")
 		if err := srv.AddListener(tcp, &listeners.Config{Auth: new(auth.Allow)}); err != nil {
@@ -36,15 +40,54 @@ func Host(
 		}
 
 		subscribed := make(map[string]struct{})
+		commandTargets := make(map[string]devices.ConnectedDevice)
+		mu := sync.RWMutex{}
+		dedup := make(map[string]map[string]struct{})
 
-		subscribe := func(id string, cd devices.ConnectedDevice) error {
-			if _, ok := subscribed[id]; ok {
+		srv.Events.OnMessage = func(cl events.Client, pk events.Packet) (events.Packet, error) {
+			mu.RLock()
+			cd, ok := commandTargets[pk.TopicName]
+			mu.RUnlock()
+			if ok {
+				payload := pk.Payload
+				key := dedupKey(payload)
+				mu.Lock()
+				if dedup[cd.CommandTopic()] == nil {
+					dedup[cd.CommandTopic()] = make(map[string]struct{})
+				}
+				dedup[cd.CommandTopic()][key] = struct{}{}
+				mu.Unlock()
+				payloadCopy := make([]byte, len(payload))
+				copy(payloadCopy, payload)
+				go func(d devices.ConnectedDevice, p []byte) {
+					if err := d.SendRaw(d.CommandTopic(), p); err != nil {
+						fmt.Println("relay:", err)
+						return
+					}
+				}(cd, payloadCopy)
+				time.AfterFunc(10*time.Second, func() {
+					mu.Lock()
+					if m, ok := dedup[cd.CommandTopic()]; ok {
+						delete(m, key)
+						if len(m) == 0 {
+							delete(dedup, cd.CommandTopic())
+						}
+					}
+					mu.Unlock()
+				})
+			}
+			return pk, nil
+		}
+
+		var subscribe func(id string, cd devices.ConnectedDevice, force bool) error
+		subscribe = func(id string, cd devices.ConnectedDevice, force bool) error {
+			if _, ok := subscribed[id]; ok && !force {
 				return nil
 			}
 			if iot {
 				cd.SetMode(devices.ModeIoT)
 			}
-			for _, topic := range []string{cd.StatusTopic(), cd.FaultTopic(), cd.CommandTopic()} {
+			for _, topic := range []string{cd.StatusTopic(), cd.FaultTopic()} {
 				t := topic
 				if err := cd.SubscribeRaw(t, func(b []byte) {
 					fmt.Printf("Incoming message %s on topic %s\n", string(b), t)
@@ -54,23 +97,97 @@ func Host(
 				}
 			}
 
-			if iot {
-				go func() {
-					ticker := time.NewTicker(30 * time.Second)
-					defer ticker.Stop()
-					for {
-						<-ticker.C
-						ts := time.Now().UTC().Format(time.RFC3339)
-						msgs := []string{
-							fmt.Sprintf(`{"mode-reason":"RAPP","time":"%s","msg":"REQUEST-CURRENT-FAULTS"}`, ts),
-							fmt.Sprintf(`{"mode-reason":"RAPP","time":"%s","msg":"REQUEST-CURRENT-STATE"}`, ts),
+			if err := cd.SubscribeRaw(cd.CommandTopic(), func(b []byte) {
+				key := dedupKey(b)
+				mu.Lock()
+				if m, ok := dedup[cd.CommandTopic()]; ok {
+					if _, seen := m[key]; seen {
+						delete(m, key)
+						if len(m) == 0 {
+							delete(dedup, cd.CommandTopic())
 						}
-						for _, m := range msgs {
-							fmt.Printf("Sending %s to %s\n", m, cd.CommandTopic())
-							_ = cd.SendRaw(cd.CommandTopic(), []byte(m))
+						mu.Unlock()
+						return
+					}
+				}
+				mu.Unlock()
+				fmt.Printf("Incoming message %s on topic %s\n", string(b), cd.CommandTopic())
+				// Do not publish command messages to MQTT server
+			}); err != nil {
+				return err
+			}
+
+			mu.Lock()
+			commandTargets[cd.CommandTopic()] = cd
+			mu.Unlock()
+
+			if iot {
+				go func(id string, cd devices.ConnectedDevice) {
+					var ticker *time.Ticker
+					if refresh > 0 {
+						ticker = time.NewTicker(time.Duration(refresh) * time.Second)
+						defer ticker.Stop()
+					}
+					credRefresh := time.NewTicker(23 * time.Hour)
+					defer credRefresh.Stop()
+					for {
+						if ticker != nil {
+							select {
+							case <-ticker.C:
+								for _, m := range []string{"REQUEST-CURRENT-FAULTS", "REQUEST-CURRENT-STATE"} {
+									ts := time.Now().UTC().Format(time.RFC3339)
+									msg := fmt.Sprintf(`{"mode-reason":"RAPP","time":"%s","msg":"%s"}`, ts, m)
+									fmt.Printf("Sending %s to %s\n", msg, cd.CommandTopic())
+									key := dedupKey([]byte(msg))
+									mu.Lock()
+									if dedup[cd.CommandTopic()] == nil {
+										dedup[cd.CommandTopic()] = make(map[string]struct{})
+									}
+									dedup[cd.CommandTopic()][key] = struct{}{}
+									mu.Unlock()
+									time.AfterFunc(10*time.Second, func() {
+										mu.Lock()
+										if mm, ok := dedup[cd.CommandTopic()]; ok {
+											delete(mm, key)
+											if len(mm) == 0 {
+												delete(dedup, cd.CommandTopic())
+											}
+										}
+										mu.Unlock()
+									})
+									_ = cd.SendRaw(cd.CommandTopic(), []byte(msg))
+								}
+							case <-credRefresh.C:
+								info, err := cloud.GetDeviceIoT(id)
+								if err != nil {
+									fmt.Println("iot refresh:", err)
+									continue
+								}
+								if u, ok := cd.(interface{ UpdateIoT(devices.IoT) }); ok {
+									u.UpdateIoT(info)
+								}
+								cd.SetMode(devices.ModeIoT)
+								if err := subscribe(id, cd, true); err != nil {
+									fmt.Println(err)
+								}
+							}
+						} else {
+							<-credRefresh.C
+							info, err := cloud.GetDeviceIoT(id)
+							if err != nil {
+								fmt.Println("iot refresh:", err)
+								continue
+							}
+							if u, ok := cd.(interface{ UpdateIoT(devices.IoT) }); ok {
+								u.UpdateIoT(info)
+							}
+							cd.SetMode(devices.ModeIoT)
+							if err := subscribe(id, cd, true); err != nil {
+								fmt.Println(err)
+							}
 						}
 					}
-				}()
+				}(id, cd)
 			}
 			subscribed[id] = struct{}{}
 			return nil
@@ -84,7 +201,7 @@ func Host(
 					continue
 				}
 				found = true
-				if err := subscribe(d.GetSerial(), cd); err != nil {
+				if err := subscribe(d.GetSerial(), cd, false); err != nil {
 					return err
 				}
 			}
@@ -106,7 +223,7 @@ func Host(
 			if !ok {
 				return fmt.Errorf("device %s is not connected", serial)
 			}
-			if err := subscribe(d.GetSerial(), cd); err != nil {
+			if err := subscribe(d.GetSerial(), cd, false); err != nil {
 				return err
 			}
 		}
@@ -128,7 +245,7 @@ func Host(
 					if !ok {
 						continue
 					}
-					if err := subscribe(d.GetSerial(), cd); err != nil {
+					if err := subscribe(d.GetSerial(), cd, false); err != nil {
 						fmt.Println(err)
 					}
 				}

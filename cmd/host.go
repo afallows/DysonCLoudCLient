@@ -16,11 +16,13 @@ var hostCmd = &cobra.Command{
 			return fmt.Errorf("must specify serial")
 		}
 		iot, _ := cmd.Flags().GetBool("iot")
-		return funcs.MQTTHost(args[0], iot)
+		refresh, _ := cmd.Flags().GetInt("refresh")
+		return funcs.MQTTHost(args[0], iot, refresh)
 	},
 }
 
 func init() {
 	rootCmd.AddCommand(hostCmd)
 	hostCmd.Flags().BoolP("iot", "", false, "connect through AWS IoT instead of local MQTT")
+	hostCmd.Flags().IntP("refresh", "", 0, "interval in seconds between periodic command publishes (0 to disable)")
 }
