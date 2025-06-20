@@ -22,6 +22,8 @@ type ConnectedDevice interface {
 
 	SendRaw(topic string, message []byte) error
 	SubscribeRaw(topic string, handler func([]byte)) error
+	UnsubscribeRaw(topic string) error
+	Close()
 	ResolveLocalAddress() error
 
 	CommandTopic() string
@@ -76,6 +78,10 @@ func (d *BaseConnectedDevice) initClient() error {
 		return fmt.Errorf("mqtt options is nil")
 	}
 
+	if Verbose {
+		fmt.Printf("[%s] connecting in mode %d\n", d.Serial, d.mode)
+	}
+
 	c := paho.NewClient(opts)
 	t := c.Connect()
 
@@ -85,6 +91,10 @@ func (d *BaseConnectedDevice) initClient() error {
 
 	if t.Error() != nil {
 		return fmt.Errorf("unable to connect: %w", t.Error())
+	}
+
+	if Verbose {
+		fmt.Printf("[%s] connected\n", d.Serial)
 	}
 
 	d.client = c
@@ -104,6 +114,9 @@ func (d *BaseConnectedDevice) SetMode(mode ConnectedMode) {
 		return
 	}
 	if d.client != nil {
+		if Verbose {
+			fmt.Printf("[%s] disconnecting\n", d.Serial)
+		}
 		d.client.Disconnect(250)
 		d.client = nil
 	}
@@ -142,6 +155,27 @@ func (d *BaseConnectedDevice) SubscribeRaw(topic string, callback func([]byte)) 
 	return t.Error()
 }
 
+func (d *BaseConnectedDevice) UnsubscribeRaw(topic string) error {
+	if d.client == nil {
+		return nil
+	}
+	t := d.client.Unsubscribe(topic)
+	if !t.WaitTimeout(timeout) {
+		return fmt.Errorf("timeout unsubscribing from topic %s", topic)
+	}
+	return t.Error()
+}
+
+func (d *BaseConnectedDevice) Close() {
+	if d.client != nil {
+		if Verbose {
+			fmt.Printf("[%s] disconnecting\n", d.Serial)
+		}
+		d.client.Disconnect(250)
+		d.client = nil
+	}
+}
+
 func (d *BaseConnectedDevice) CommandTopic() string {
 	return fmt.Sprintf("%s/%s/command", d.MQTT.TopicRoot, d.Serial)
 }
@@ -170,6 +204,9 @@ func (d *BaseConnectedDevice) ResolveLocalAddress() error {
 func (d *BaseConnectedDevice) UpdateIoT(iot IoT) {
 	d.IoT = iot
 	if d.mode == ModeIoT && d.client != nil {
+		if Verbose {
+			fmt.Printf("[%s] updating IoT credentials and reconnecting\n", d.Serial)
+		}
 		d.client.Disconnect(250)
 		d.client = nil
 	}

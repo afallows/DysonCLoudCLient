@@ -11,6 +11,9 @@ import (
 )
 
 func GetDevices() ([]devices.Device, error) {
+	if Verbose {
+		fmt.Printf("[cloud] fetching device list from %s\n", CurrentServer())
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second*20)
 	defer cancel()
 	resp, err := client.GetDevicesWithResponse(ctx)
@@ -31,6 +34,9 @@ func GetDevices() ([]devices.Device, error) {
 }
 
 func GetDeviceIoT(serial string) (devices.IoT, error) {
+	if Verbose {
+		fmt.Printf("[cloud] requesting IoT credentials for %s\n", serial)
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second*10)
 	defer cancel()
 
@@ -46,5 +52,12 @@ func GetDeviceIoT(serial string) (devices.IoT, error) {
 		return devices.IoT{}, fmt.Errorf("error getting IoT info from cloud, http status code: %d", resp.StatusCode())
 	}
 
-	return mapIoT(*resp.JSON200), nil
+	iot := mapIoT(*resp.JSON200)
+	if Verbose {
+		fmt.Printf("[cloud] endpoint: %s\n", iot.Endpoint)
+		fmt.Printf("[cloud] clientID: %s\n", iot.ClientID)
+		fmt.Printf("[cloud] token key: %s value: %s\n", iot.TokenKey, iot.TokenValue)
+		fmt.Printf("[cloud] token signature: %s\n", iot.TokenSignature)
+	}
+	return iot, nil
 }
