@@ -280,6 +280,12 @@ func Host(
 			if Verbose {
 				fmt.Println("[host] shutting down")
 			}
+			for _, cancel := range cancels {
+				cancel()
+			}
+			for _, cd := range commandTargets {
+				cd.Close()
+			}
 			srv.Close()
 			os.Exit(0)
 		}()

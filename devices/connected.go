@@ -22,6 +22,8 @@ type ConnectedDevice interface {
 
 	SendRaw(topic string, message []byte) error
 	SubscribeRaw(topic string, handler func([]byte)) error
+	UnsubscribeRaw(topic string) error
+	Close()
 	ResolveLocalAddress() error
 
 	CommandTopic() string
@@ -151,6 +153,27 @@ func (d *BaseConnectedDevice) SubscribeRaw(topic string, callback func([]byte)) 
 		return fmt.Errorf("timeout subscribing to topic %s", topic)
 	}
 	return t.Error()
+}
+
+func (d *BaseConnectedDevice) UnsubscribeRaw(topic string) error {
+	if d.client == nil {
+		return nil
+	}
+	t := d.client.Unsubscribe(topic)
+	if !t.WaitTimeout(timeout) {
+		return fmt.Errorf("timeout unsubscribing from topic %s", topic)
+	}
+	return t.Error()
+}
+
+func (d *BaseConnectedDevice) Close() {
+	if d.client != nil {
+		if Verbose {
+			fmt.Printf("[%s] disconnecting\n", d.Serial)
+		}
+		d.client.Disconnect(250)
+		d.client = nil
+	}
 }
 
 func (d *BaseConnectedDevice) CommandTopic() string {

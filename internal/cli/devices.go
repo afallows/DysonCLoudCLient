@@ -47,6 +47,15 @@ func DeviceGetter(getDevices func() ([]devices.Device, error)) func() ([]devices
 	}
 }
 
+func findDevice(ds []devices.Device, serial string) (devices.Device, bool) {
+	for _, d := range ds {
+		if d.GetSerial() == serial {
+			return d, true
+		}
+	}
+	return nil, false
+}
+
 func Listener(
 	getDevices func() ([]devices.Device, error),
 	printLine func(in string),
@@ -159,6 +168,16 @@ func Listener(
 			<-sig
 			if Verbose {
 				fmt.Println("[listener] shutting down")
+			}
+			for _, cancel := range cancels {
+				cancel()
+			}
+			for id := range subscribed {
+				if d, ok := findDevice(ds, id); ok {
+					if cd, ok := d.(devices.ConnectedDevice); ok {
+						cd.Close()
+					}
+				}
 			}
 			os.Exit(0)
 		}()

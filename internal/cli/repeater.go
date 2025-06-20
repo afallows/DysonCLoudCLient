@@ -62,6 +62,7 @@ func Repeater(
 		mu := sync.RWMutex{}
 		dedup := make(map[string]map[string]struct{})
 		cancels := make(map[string]context.CancelFunc)
+		hostSubs := make(map[string]struct{})
 
 		var subscribe func(id string, cd devices.ConnectedDevice, force bool) error
 		subscribe = func(id string, cd devices.ConnectedDevice, force bool) error {
@@ -142,6 +143,7 @@ func Repeater(
 			} else if token.Error() != nil {
 				return token.Error()
 			}
+			hostSubs[cd.CommandTopic()] = struct{}{}
 
 			if iot {
 				ctx, cancel := context.WithCancel(context.Background())
@@ -289,6 +291,19 @@ func Repeater(
 			<-sig
 			if Verbose {
 				fmt.Println("[repeater] disconnecting")
+			}
+			for _, cancel := range cancels {
+				cancel()
+			}
+			for _, cd := range commandTargets {
+				cd.Close()
+			}
+			if len(hostSubs) > 0 {
+				topics := make([]string, 0, len(hostSubs))
+				for t := range hostSubs {
+					topics = append(topics, t)
+				}
+				client.Unsubscribe(topics...)
 			}
 			client.Disconnect(250)
 			os.Exit(0)
