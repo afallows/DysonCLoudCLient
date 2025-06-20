@@ -36,5 +36,11 @@ func (d *BaseConnectedDevice) iotOptions() (*paho.ClientOptions, error) {
 
 	opts.SetProtocolVersion(3)
 
+	if Verbose {
+		fmt.Printf("[IoT] Endpoint: %s\n", brokerAddress)
+		fmt.Printf("[IoT] ClientID: %s\n", d.IoT.ClientID.String())
+		fmt.Printf("[IoT] Headers: %v\n", headers)
+	}
+
 	return opts, nil
 }

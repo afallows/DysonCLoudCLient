@@ -76,6 +76,10 @@ func (d *BaseConnectedDevice) initClient() error {
 		return fmt.Errorf("mqtt options is nil")
 	}
 
+	if Verbose {
+		fmt.Printf("[%s] connecting in mode %d\n", d.Serial, d.mode)
+	}
+
 	c := paho.NewClient(opts)
 	t := c.Connect()
 
@@ -85,6 +89,10 @@ func (d *BaseConnectedDevice) initClient() error {
 
 	if t.Error() != nil {
 		return fmt.Errorf("unable to connect: %w", t.Error())
+	}
+
+	if Verbose {
+		fmt.Printf("[%s] connected\n", d.Serial)
 	}
 
 	d.client = c
@@ -104,6 +112,9 @@ func (d *BaseConnectedDevice) SetMode(mode ConnectedMode) {
 		return
 	}
 	if d.client != nil {
+		if Verbose {
+			fmt.Printf("[%s] disconnecting\n", d.Serial)
+		}
 		d.client.Disconnect(250)
 		d.client = nil
 	}
@@ -170,6 +181,9 @@ func (d *BaseConnectedDevice) ResolveLocalAddress() error {
 func (d *BaseConnectedDevice) UpdateIoT(iot IoT) {
 	d.IoT = iot
 	if d.mode == ModeIoT && d.client != nil {
+		if Verbose {
+			fmt.Printf("[%s] updating IoT credentials and reconnecting\n", d.Serial)
+		}
 		d.client.Disconnect(250)
 		d.client = nil
 	}

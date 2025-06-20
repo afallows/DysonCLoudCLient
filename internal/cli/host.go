@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/signal"
@@ -24,6 +25,9 @@ func Host(
 ) func(serial string, iot bool, refresh int) error {
 	return func(serial string, iot bool, refresh int) error {
 		srv := mqttsrv.New()
+		if Verbose {
+			fmt.Println("[host] starting mqtt server on :1883")
+		}
 		tcp := listeners.NewTCP("t1", ":1883")
 		if err := srv.AddListener(tcp, &listeners.Config{Auth: new(auth.Allow)}); err != nil {
 			return fmt.Errorf("add listener: %w", err)
@@ -43,6 +47,7 @@ func Host(
 		commandTargets := make(map[string]devices.ConnectedDevice)
 		mu := sync.RWMutex{}
 		dedup := make(map[string]map[string]struct{})
+		cancels := make(map[string]context.CancelFunc)
 
 		srv.Events.OnMessage = func(cl events.Client, pk events.Packet) (events.Packet, error) {
 			mu.RLock()
@@ -81,8 +86,14 @@ func Host(
 
 		var subscribe func(id string, cd devices.ConnectedDevice, force bool) error
 		subscribe = func(id string, cd devices.ConnectedDevice, force bool) error {
-			if _, ok := subscribed[id]; ok && !force {
-				return nil
+			if c, ok := cancels[id]; ok {
+				if force {
+					c()
+					delete(cancels, id)
+					delete(subscribed, id)
+				} else {
+					return nil
+				}
 			}
 			if iot {
 				cd.SetMode(devices.ModeIoT)
@@ -122,7 +133,9 @@ func Host(
 			mu.Unlock()
 
 			if iot {
-				go func(id string, cd devices.ConnectedDevice) {
+				ctx, cancel := context.WithCancel(context.Background())
+				cancels[id] = cancel
+				go func(ctx context.Context, id string, cd devices.ConnectedDevice) {
 					var ticker *time.Ticker
 					if refresh > 0 {
 						ticker = time.NewTicker(time.Duration(refresh) * time.Second)
@@ -170,24 +183,30 @@ func Host(
 								if err := subscribe(id, cd, true); err != nil {
 									fmt.Println(err)
 								}
+							case <-ctx.Done():
+								return
 							}
 						} else {
-							<-credRefresh.C
-							info, err := cloud.GetDeviceIoT(id)
-							if err != nil {
-								fmt.Println("iot refresh:", err)
-								continue
-							}
-							if u, ok := cd.(interface{ UpdateIoT(devices.IoT) }); ok {
-								u.UpdateIoT(info)
-							}
-							cd.SetMode(devices.ModeIoT)
-							if err := subscribe(id, cd, true); err != nil {
-								fmt.Println(err)
+							select {
+							case <-credRefresh.C:
+								info, err := cloud.GetDeviceIoT(id)
+								if err != nil {
+									fmt.Println("iot refresh:", err)
+									continue
+								}
+								if u, ok := cd.(interface{ UpdateIoT(devices.IoT) }); ok {
+									u.UpdateIoT(info)
+								}
+								cd.SetMode(devices.ModeIoT)
+								if err := subscribe(id, cd, true); err != nil {
+									fmt.Println(err)
+								}
+							case <-ctx.Done():
+								return
 							}
 						}
 					}
-				}(id, cd)
+				}(ctx, id, cd)
 			}
 			subscribed[id] = struct{}{}
 			return nil
@@ -256,6 +275,9 @@ func Host(
 		signal.Notify(sig, syscall.SIGTERM, os.Interrupt)
 		go func() {
 			<-sig
+			if Verbose {
+				fmt.Println("[host] shutting down")
+			}
 			srv.Close()
 			os.Exit(0)
 		}()

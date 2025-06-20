@@ -25,5 +25,10 @@ func (d *BaseConnectedDevice) mqttOptions() (*paho.ClientOptions, error) {
 	opts.SetUsername(d.MQTT.Username)
 	opts.SetPassword(d.MQTT.Password)
 
+	if Verbose {
+		fmt.Printf("[MQTT] Broker: %s:1883\n", d.MQTT.Address)
+		fmt.Printf("[MQTT] Username: %s Password: %s\n", d.MQTT.Username, d.MQTT.Password)
+	}
+
 	return opts, nil
 }

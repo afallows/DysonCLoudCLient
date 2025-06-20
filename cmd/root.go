@@ -3,6 +3,8 @@ package cmd
 import (
 	"os"
 
+	"github.com/libdyson-wg/opendyson/devices"
+	"github.com/libdyson-wg/opendyson/internal/cli"
 	"github.com/spf13/cobra"
 )
 
@@ -21,5 +23,15 @@ func Execute() {
 	err := rootCmd.Execute()
 	if err != nil {
 		os.Exit(1)
+	}
+}
+
+var verbose bool
+
+func init() {
+	rootCmd.PersistentFlags().BoolVarP(&verbose, "verbose", "v", false, "enable verbose output")
+	rootCmd.PersistentPreRun = func(cmd *cobra.Command, args []string) {
+		cli.Verbose = verbose
+		devices.Verbose = verbose
 	}
 }

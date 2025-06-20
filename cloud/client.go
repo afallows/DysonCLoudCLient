@@ -67,3 +67,7 @@ func SetServerRegion(r ServerRegion) {
 	region = r
 	setServer()
 }
+
+func CurrentServer() string {
+	return servers[region]
+}

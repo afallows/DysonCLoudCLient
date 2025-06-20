@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/signal"
@@ -21,6 +22,12 @@ func Repeater(
 ) func(serial string, iot bool, host, user, password string, refresh int) error {
 	return func(serial string, iot bool, host, user, password string, refresh int) error {
 		opts := paho.NewClientOptions()
+		if Verbose {
+			fmt.Printf("[repeater] connecting to %s\n", host)
+			if user != "" {
+				fmt.Printf("[repeater] username: %s password: %s\n", user, password)
+			}
+		}
 		if strings.Contains(host, "://") {
 			opts.AddBroker(host)
 		} else {
@@ -39,6 +46,9 @@ func Repeater(
 		if t.Error() != nil {
 			return fmt.Errorf("unable to connect: %w", t.Error())
 		}
+		if Verbose {
+			fmt.Println("[repeater] connected")
+		}
 
 		ds, err := getDevices()
 		if err != nil {
@@ -49,11 +59,18 @@ func Repeater(
 		commandTargets := make(map[string]devices.ConnectedDevice)
 		mu := sync.RWMutex{}
 		dedup := make(map[string]map[string]struct{})
+		cancels := make(map[string]context.CancelFunc)
 
 		var subscribe func(id string, cd devices.ConnectedDevice, force bool) error
 		subscribe = func(id string, cd devices.ConnectedDevice, force bool) error {
-			if _, ok := subscribed[id]; ok && !force {
-				return nil
+			if c, ok := cancels[id]; ok {
+				if force {
+					c()
+					delete(cancels, id)
+					delete(subscribed, id)
+				} else {
+					return nil
+				}
 			}
 			if iot {
 				cd.SetMode(devices.ModeIoT)
@@ -125,7 +142,9 @@ func Repeater(
 			}
 
 			if iot {
-				go func(id string, cd devices.ConnectedDevice) {
+				ctx, cancel := context.WithCancel(context.Background())
+				cancels[id] = cancel
+				go func(ctx context.Context, id string, cd devices.ConnectedDevice) {
 					var ticker *time.Ticker
 					if refresh > 0 {
 						ticker = time.NewTicker(time.Duration(refresh) * time.Second)
@@ -173,24 +192,30 @@ func Repeater(
 								if err := subscribe(id, cd, true); err != nil {
 									fmt.Println(err)
 								}
+							case <-ctx.Done():
+								return
 							}
 						} else {
-							<-credRefresh.C
-							info, err := cloud.GetDeviceIoT(id)
-							if err != nil {
-								fmt.Println("iot refresh:", err)
-								continue
-							}
-							if u, ok := cd.(interface{ UpdateIoT(devices.IoT) }); ok {
-								u.UpdateIoT(info)
-							}
-							cd.SetMode(devices.ModeIoT)
-							if err := subscribe(id, cd, true); err != nil {
-								fmt.Println(err)
+							select {
+							case <-credRefresh.C:
+								info, err := cloud.GetDeviceIoT(id)
+								if err != nil {
+									fmt.Println("iot refresh:", err)
+									continue
+								}
+								if u, ok := cd.(interface{ UpdateIoT(devices.IoT) }); ok {
+									u.UpdateIoT(info)
+								}
+								cd.SetMode(devices.ModeIoT)
+								if err := subscribe(id, cd, true); err != nil {
+									fmt.Println(err)
+								}
+							case <-ctx.Done():
+								return
 							}
 						}
 					}
-				}(id, cd)
+				}(ctx, id, cd)
 			}
 			subscribed[id] = struct{}{}
 			return nil
@@ -259,6 +284,9 @@ func Repeater(
 		signal.Notify(sig, syscall.SIGTERM, os.Interrupt)
 		go func() {
 			<-sig
+			if Verbose {
+				fmt.Println("[repeater] disconnecting")
+			}
 			client.Disconnect(250)
 			os.Exit(0)
 		}()
