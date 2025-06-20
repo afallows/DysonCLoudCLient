@@ -22,6 +22,7 @@ func Repeater(
 ) func(serial string, iot bool, host, user, password string, refresh int) error {
 	return func(serial string, iot bool, host, user, password string, refresh int) error {
 		opts := paho.NewClientOptions()
+		opts.SetResumeSubs(true)
 		if Verbose {
 			fmt.Printf("[repeater] connecting to %s\n", host)
 			if user != "" {
