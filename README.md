@@ -56,3 +56,7 @@ is included, opendyson will connect to the cloud-based IoT service instead of at
     credentials are provided, the connection will be unauthenticated. The `--iot`
     flag can be used in the same way as with `listen`. When repeating with `ALL`,
     the command polls for new devices every five minutes and starts repeating their messages automatically.
+
+### Quitting
+
+Press `Ctrl+X` during any long-running command to close all connections and exit gracefully.

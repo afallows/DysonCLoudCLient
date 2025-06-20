@@ -24,6 +24,12 @@ func (d *BaseConnectedDevice) mqttOptions() (*paho.ClientOptions, error) {
 	opts.SetClientID("libdyson-wg/opendyson")
 	opts.SetUsername(d.MQTT.Username)
 	opts.SetPassword(d.MQTT.Password)
+	opts.SetResumeSubs(true)
+
+	if Verbose {
+		fmt.Printf("[MQTT] Broker: %s:1883\n", d.MQTT.Address)
+		fmt.Printf("[MQTT] Username: %s Password: %s\n", d.MQTT.Username, d.MQTT.Password)
+	}
 
 	return opts, nil
 }
